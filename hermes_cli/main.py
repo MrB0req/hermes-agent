@@ -9720,6 +9720,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
+        # Local-deploy guard (ZenekHermes, 2026-07-10): being on a non-target
+        # branch signals a deliberate local deploy (cherry-picked patches).
+        # A non-interactive update (desktop one-click "update", gateway,
+        # --yes) silently switching to the target branch would wipe those
+        # patches — the operator never made that call. Refuse instead;
+        # interactive terminal updates keep the historical switch behavior.
+        if current_branch != branch and _non_interactive_update:
+            print(
+                f"✗ hermes-agent is on '{current_branch}' (deliberate local "
+                f"deploy) — non-interactive update SKIPPED. Check out "
+                f"'{branch}' first or update from a terminal: hermes update"
+            )
+            sys.exit(3)
+
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's
