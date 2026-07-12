@@ -601,13 +601,103 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Non-main branch → auto-checkout main
+# Branch switching and non-interactive local-deploy guard
 # ---------------------------------------------------------------------------
 
+
+def _force_interactive_update(monkeypatch):
+    """Make an update behave as if a human launched it from a terminal."""
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hermes_main.sys.stdout, "isatty", lambda: True)
+
+
+def _assert_no_destructive_branch_commands(recorded):
+    joined = [" ".join(str(part) for part in cmd) for cmd in recorded]
+    assert not any(" checkout " in f" {cmd} " for cmd in joined)
+    assert not any(" reset " in f" {cmd} " for cmd in joined)
+
+
+def test_noninteractive_local_branch_exits_3_without_checkout_reset_or_stash(
+    monkeypatch, tmp_path, capsys
+):
+    """One-click/gateway updates must not wipe a deliberate local deploy."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    stash_calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *args, **kwargs: stash_calls.append((args, kwargs)),
+    )
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="deploy-local-20260713"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert exc.value.code == 3
+    assert stash_calls == []
+    _assert_no_destructive_branch_commands(recorded)
+    assert "non-interactive update SKIPPED" in capsys.readouterr().out
+
+
+def test_noninteractive_detached_head_is_blocked(monkeypatch, tmp_path):
+    """Detached HEAD receives the same guard as any other non-target ref."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    stash_calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *args, **kwargs: stash_calls.append((args, kwargs)),
+    )
+    side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert exc.value.code == 3
+    assert stash_calls == []
+    _assert_no_destructive_branch_commands(recorded)
+
+
+def test_noninteractive_update_proceeds_on_target_branch(monkeypatch, tmp_path):
+    """The guard is a no-op when HEAD already matches the default target."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="main", commit_count="0"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    _assert_no_destructive_branch_commands(recorded)
+
+
+def test_noninteractive_explicit_branch_proceeds_when_it_matches_head(
+    monkeypatch, tmp_path
+):
+    """An explicit --branch equal to HEAD is a valid non-interactive target."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    branch = "deploy-local-20260713"
+    side_effect, recorded = _make_update_side_effect(
+        current_branch=branch, commit_count="0"
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True, branch=branch))
+
+    fetch_calls = [cmd for cmd in recorded if "fetch" in cmd]
+    assert fetch_calls == [["git", "fetch", "origin", branch]]
+    _assert_no_destructive_branch_commands(recorded)
+
+
 def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
+    """An interactive update may still switch a feature branch to main."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    _force_interactive_update(monkeypatch)
 
     side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
@@ -623,9 +713,10 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
-    """When in detached HEAD state, update checks out main before pulling."""
+    """An interactive update may still switch detached HEAD to main."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    _force_interactive_update(monkeypatch)
 
     side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
@@ -640,9 +731,10 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
 
 
 def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
-    """When on a feature branch with no updates, stash is restored and branch switched back."""
+    """Interactive feature-branch updates restore the stash and original branch."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    _force_interactive_update(monkeypatch)
 
     # Enable stash so it returns a ref
     monkeypatch.setattr(

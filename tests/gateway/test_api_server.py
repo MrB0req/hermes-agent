@@ -4118,9 +4118,10 @@ class TestModelRoutesAgentCreation:
 
         adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
 
-        # The route must NOT be applied — the session override path (global
-        # runtime here, since the gateway applies /model separately) wins.
-        assert captured["model"] == "global/model"
+        # The route must NOT be applied.  The explicit session override is
+        # applied directly to this API-server agent and wins over both the
+        # static route and global runtime defaults.
+        assert captured["model"] == "session/override-model"
         assert captured["api_key"] == "sk-global"
 
     def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
@@ -4143,6 +4144,46 @@ class TestModelRoutesAgentCreation:
 
 class TestPatchSessionModelAndYolo:
     """PATCH /api/sessions/{session_id} accepts model and yolo fields."""
+
+    @pytest.fixture(autouse=True)
+    def _run_mocked_model_switch_inline(self, monkeypatch):
+        """Keep unit-test model switching off asyncio's default executor.
+
+        ``_apply_model_override`` deliberately sends ``switch_model`` to the
+        loop executor in production.  These tests replace ``switch_model``
+        with an immediate lambda, so a real worker thread adds no coverage
+        and can make pytest-asyncio wait indefinitely while closing its
+        function-scoped runner.  A module-local asyncio proxy preserves every
+        other asyncio operation and resolves only ``run_in_executor`` inline.
+        """
+        from gateway.platforms import api_server as api_server_module
+
+        real_asyncio = api_server_module.asyncio
+
+        class InlineExecutorLoop:
+            def __init__(self, loop):
+                self._loop = loop
+
+            def __getattr__(self, name):
+                return getattr(self._loop, name)
+
+            def run_in_executor(self, executor, func, *args):
+                future = self._loop.create_future()
+                try:
+                    future.set_result(func(*args))
+                except BaseException as exc:
+                    future.set_exception(exc)
+                return future
+
+        class AsyncioProxy:
+            def __getattr__(self, name):
+                return getattr(real_asyncio, name)
+
+            @staticmethod
+            def get_running_loop():
+                return InlineExecutorLoop(real_asyncio.get_running_loop())
+
+        monkeypatch.setattr(api_server_module, "asyncio", AsyncioProxy())
 
     @pytest.mark.asyncio
     async def test_patch_model_sets_override_on_runner(self, monkeypatch):
