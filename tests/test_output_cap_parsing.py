@@ -132,3 +132,43 @@ class TestParseVllmTokenBasedOutputCap:
         assert available is not None
         assert available + 65537 <= 131072
 
+
+
+class TestParseOllamaCloudOutputCap:
+    """Ollama Cloud (ollama.com OpenAI-compatible API) rejects an over-sized
+    max_tokens with an explicit cap in the error message (#55546 variant)."""
+
+    _DEEPSEEK_MSG = (
+        'max_tokens (200000) exceeds model\'s maximum output tokens (65536) '
+        'for model deepseek-v4-flash:0731 (ref: 01jmr3f7x5efjbqp5y4bk2n48x)'
+    )
+
+    _GLM_MSG = (
+        'max_tokens (200000) exceeds model\'s maximum output tokens (131072) '
+        'for model glm-5.2 (ref: 01jmr3g9k7efnbqr8z5ck3m59y)'
+    )
+
+    def test_deepseek_is_output_cap_error(self):
+        assert is_output_cap_error(self._DEEPSEEK_MSG) is True
+
+    def test_deepseek_parses_cap(self):
+        assert parse_available_output_tokens_from_error(self._DEEPSEEK_MSG) == 65536
+
+    def test_glm_is_output_cap_error(self):
+        assert is_output_cap_error(self._GLM_MSG) is True
+
+    def test_glm_parses_cap(self):
+        assert parse_available_output_tokens_from_error(self._GLM_MSG) == 131072
+
+    def test_vllm_input_overflow_is_not_output_cap(self):
+        # A context-length-exceeded error that mentions max_tokens AND output
+        # tokens, but is really about the INPUT being too large — must NOT be
+        # classified as an output-cap error.
+        msg = (
+            "This model's maximum context length is 131072 tokens. However, "
+            "you requested 65536 output tokens and your prompt contains at "
+            "least 131073 input tokens, for a total of at least 196609 tokens. "
+            "Please reduce the length of the input prompt or the number of "
+            "requested output tokens."
+        )
+        assert is_output_cap_error(msg) is False

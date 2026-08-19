@@ -1659,6 +1659,14 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # Ollama Cloud (ollama.com OpenAI-compatible API) phrasing:
+        #   "max_tokens (200000) exceeds model's maximum output tokens (65536)
+        #    for model deepseek-v4-flash:0731"
+        # The input fits — purely an output-cap error.
+        "max_tokens" in error_lower
+        and "exceeds" in error_lower
+        and "maximum output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -1734,6 +1742,16 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         if _available >= 1:
             return _available
 
+    # Ollama Cloud (ollama.com OpenAI-compatible API):
+    #   "max_tokens (200000) exceeds model's maximum output tokens (65536)
+    #    for model deepseek-v4-flash:0731"
+    # The number in "maximum output tokens (N)" is the model's hard cap.
+    _m_ollama = re.search(r'maximum output tokens\s*\((\d+)\)', error_lower)
+    if _m_ollama and "max_tokens" in error_lower:
+        _cap = int(_m_ollama.group(1))
+        if _cap >= 1:
+            return _cap
+
     return None
 
 
@@ -1779,6 +1797,8 @@ def is_output_cap_error(error_msg: str) -> bool:
             and "maximum context length" in error_lower)
         or ("requested" in error_lower                      # LM Studio / llama.cpp
             and "output tokens" in error_lower)
+        or ("exceeds" in error_lower                        # Ollama Cloud (ollama.com)
+            and "maximum output tokens" in error_lower)
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
